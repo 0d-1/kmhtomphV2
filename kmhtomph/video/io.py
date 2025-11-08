@@ -26,6 +26,8 @@ import math
 import cv2
 import numpy as np
 
+from .subtitle_backend import SubtitleExtractorVideoReader
+
 
 # ---------------------------------
 # Ouverture avec fallbacks backends
@@ -172,13 +174,39 @@ def seek_msec(cap: cv2.VideoCapture, ms: float) -> bool:
 @dataclass
 class VideoReader:
     source: str | int
+    backend: str = "subtitle_extractor"
     cap: Optional[cv2.VideoCapture] = None
     fps: float = 0.0
     frame_count: float = 0.0
     width: int = 0
     height: int = 0
 
+    _subtitle_backend: Optional[SubtitleExtractorVideoReader] = None
+
+    def _use_subtitle_backend(self) -> bool:
+        return str(self.backend).lower() in {"subtitle_extractor", "ffmpeg"}
+
     def open(self) -> None:
+        if self._use_subtitle_backend():
+            if isinstance(self.source, int):
+                raise ValueError("La lecture via ffmpeg ne supporte pas les caméras live.")
+            backend = SubtitleExtractorVideoReader(str(self.source))
+            try:
+                backend.open()
+            except Exception:
+                # Fallback automatique vers OpenCV si ffmpeg échoue
+                self.backend = "opencv"
+                self._subtitle_backend = None
+            else:
+                self._subtitle_backend = backend
+                self.cap = None
+                self.fps = backend.fps
+                self.frame_count = backend.frame_count
+                self.width = backend.width
+                self.height = backend.height
+                return
+
+        self._subtitle_backend = None
         self.cap = open_capture(self.source)
         props = get_props(self.cap)
         self.fps = props["fps"]
@@ -187,32 +215,69 @@ class VideoReader:
         self.height = props["height"]
 
     def is_opened(self) -> bool:
+        if self._use_subtitle_backend():
+            return self._subtitle_backend is not None and self._subtitle_backend.is_opened()
         return self.cap is not None and self.cap.isOpened()
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        if self._use_subtitle_backend():
+            assert self._subtitle_backend is not None, "VideoReader non ouvert"
+            return self._subtitle_backend.read()
+
         assert self.cap is not None, "VideoReader non ouvert"
         return read_frame(self.cap)
 
     def seek_msec(self, ms: float) -> bool:
+        if self._use_subtitle_backend():
+            assert self._subtitle_backend is not None, "VideoReader non ouvert"
+            return self._subtitle_backend.seek_msec(ms)
+
         assert self.cap is not None, "VideoReader non ouvert"
         return seek_msec(self.cap, ms)
 
     def set_pos_frame(self, idx: int) -> bool:
+        if self._use_subtitle_backend():
+            assert self._subtitle_backend is not None, "VideoReader non ouvert"
+            return self._subtitle_backend.set_pos_frame(idx)
+
         assert self.cap is not None, "VideoReader non ouvert"
         return _set_pos_frames(self.cap, idx)
 
     def get_pos_msec(self) -> float:
+        if self._use_subtitle_backend():
+            assert self._subtitle_backend is not None, "VideoReader non ouvert"
+            return self._subtitle_backend.get_pos_msec()
+
         assert self.cap is not None, "VideoReader non ouvert"
         return _safe_get(self.cap, cv2.CAP_PROP_POS_MSEC, 0.0)
 
     def get_pos_frame(self) -> int:
+        if self._use_subtitle_backend():
+            assert self._subtitle_backend is not None, "VideoReader non ouvert"
+            return self._subtitle_backend.get_pos_frame()
+
         assert self.cap is not None, "VideoReader non ouvert"
         return _get_pos_frames(self.cap)
 
     def release(self) -> None:
+        if self._use_subtitle_backend():
+            if self._subtitle_backend is not None:
+                self._subtitle_backend.release()
+                self._subtitle_backend = None
+            return
+
         if self.cap is not None:
             try:
                 self.cap.release()
             except Exception:
                 pass
             self.cap = None
+
+    def get_props_dict(self) -> Dict[str, float]:
+        return {
+            "fps": float(self.fps),
+            "frame_count": float(self.frame_count),
+            "width": float(self.width),
+            "height": float(self.height),
+            "fourcc": 0.0,
+        }
