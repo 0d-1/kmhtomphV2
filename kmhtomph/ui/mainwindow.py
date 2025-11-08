@@ -159,6 +159,11 @@ class MainWindow(QMainWindow):
         self._timeline_total_duration: float = 0.0
         self._timeline_status_reason: Optional[str] = "Aucune analyse effectuée."
         self._timeline_table_loading: bool = False
+        self._timeline_pending_seek_row: Optional[int] = None
+        self._timeline_last_seek_row: Optional[int] = None
+        self._timeline_seek_timer = QTimer(self)
+        self._timeline_seek_timer.setSingleShot(True)
+        self._timeline_seek_timer.timeout.connect(self._perform_pending_timeline_seek)
 
         # --- UI ---
         self.canvas = VideoCanvas(self)
@@ -431,6 +436,8 @@ class MainWindow(QMainWindow):
     def _refresh_timeline_table(self) -> None:
         if not hasattr(self, "timeline_table"):
             return
+        self._cancel_pending_timeline_seek()
+        self._timeline_last_seek_row = None
         self._ensure_timeline_time_markers()
         self._timeline_table_loading = True
         try:
@@ -624,10 +631,32 @@ class MainWindow(QMainWindow):
         self._jump_to_timeline_row(item.row())
 
     def _jump_to_timeline_row(self, row: int) -> None:
+        if self._timeline_table_loading:
+            return
         if row < 0 or row >= len(self.speed_timeline):
             return
+        if self._timeline_last_seek_row == row:
+            return
+        self._timeline_pending_seek_row = row
+        if self._timeline_seek_timer.isActive():
+            self._timeline_seek_timer.stop()
+        self._timeline_seek_timer.start(0)
+
+    def _perform_pending_timeline_seek(self) -> None:
+        row = self._timeline_pending_seek_row
+        self._timeline_pending_seek_row = None
+        if row is None:
+            return
+        if row < 0 or row >= len(self.speed_timeline):
+            return
+        self._timeline_last_seek_row = row
         entry = self.speed_timeline[row]
         self._seek_preview_to_time(entry.time_sec)
+
+    def _cancel_pending_timeline_seek(self) -> None:
+        self._timeline_pending_seek_row = None
+        if hasattr(self, "_timeline_seek_timer") and self._timeline_seek_timer.isActive():
+            self._timeline_seek_timer.stop()
 
     def _seek_preview_to_time(self, seconds: float) -> None:
         if not self.reader or not self.reader.is_opened():
@@ -810,6 +839,8 @@ class MainWindow(QMainWindow):
         self.speed_timeline = []
         self._timeline_context = None
         self._timeline_total_duration = 0.0
+        self._timeline_last_seek_row = None
+        self._cancel_pending_timeline_seek()
         if reason and had_timeline:
             self._timeline_status_reason = f"Recalcul requis ({reason})."
         elif not had_timeline and self._timeline_status_reason is None:
