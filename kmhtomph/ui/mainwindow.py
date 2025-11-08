@@ -395,6 +395,8 @@ class MainWindow(QMainWindow):
         self.timeline_table.setEditTriggers(
             QTableWidget.DoubleClicked | QTableWidget.SelectedClicked | QTableWidget.EditKeyPressed
         )
+        self.timeline_table.itemSelectionChanged.connect(self._on_timeline_selection_changed)
+        self.timeline_table.itemActivated.connect(self._on_timeline_item_activated)
         self.timeline_table.itemChanged.connect(self._on_timeline_item_changed)
         group_layout.addWidget(self.timeline_table, 1)
 
@@ -403,6 +405,7 @@ class MainWindow(QMainWindow):
     def _refresh_timeline_table(self) -> None:
         if not hasattr(self, "timeline_table"):
             return
+        self._ensure_timeline_time_markers()
         self._timeline_table_loading = True
         try:
             self.timeline_table.clearContents()
@@ -443,6 +446,16 @@ class MainWindow(QMainWindow):
             self.timeline_status_label.setText(message)
             return
 
+        if all(entry.kmh is None for entry in self.speed_timeline):
+            base_message = "Aucune valeur analysée. Saisissez les vitesses manuellement ou lancez l’analyse."
+            if self._timeline_status_reason:
+                message = f"{self._timeline_status_reason} {base_message}".strip()
+            else:
+                message = base_message
+            self.timeline_status_label.setStyleSheet("color: #888; font-size: 11px;")
+            self.timeline_status_label.setText(message)
+            return
+
         manual_count = sum(1 for entry in self.speed_timeline if entry.manual)
         base = f"{len(self.speed_timeline)} valeurs analysées (pas {self.timeline_step_seconds:.1f} s)."
         if self._timeline_total_duration > 0.0:
@@ -451,6 +464,37 @@ class MainWindow(QMainWindow):
             base += f" {manual_count} valeur(s) modifiée(s) manuellement."
         self.timeline_status_label.setStyleSheet("color: #555; font-size: 11px;")
         self.timeline_status_label.setText(base)
+
+    def _ensure_timeline_time_markers(self) -> None:
+        if self.speed_timeline:
+            return
+        if not self.reader or not self.reader.is_opened():
+            return
+        fps = self._fps()
+        total_frames = self._total_frames()
+        if fps <= 0 or total_frames <= 0:
+            return
+        total_seconds = float(total_frames) / float(fps)
+        steps = int(math.ceil(total_seconds / self.timeline_step_seconds))
+        if steps <= 0:
+            return
+        entries: List[SpeedTimelineEntry] = []
+        for step_idx in range(steps):
+            start_time = step_idx * self.timeline_step_seconds
+            if start_time > total_seconds:
+                start_time = total_seconds
+            entries.append(
+                SpeedTimelineEntry(
+                    time_sec=float(round(start_time, 3)),
+                    kmh=None,
+                    manual=False,
+                )
+            )
+        self.speed_timeline = entries
+        self._timeline_total_duration = total_seconds
+        self._timeline_context = self._current_timeline_context()
+        if not self._timeline_status_reason:
+            self._timeline_status_reason = "Aucune analyse effectuée."
 
     def _apply_timeline_row_style(
         self,
@@ -517,6 +561,8 @@ class MainWindow(QMainWindow):
         if not text:
             entry.kmh = None
             entry.manual = True
+            self._timeline_status_reason = None
+            self._timeline_context = self._current_timeline_context()
             self._update_timeline_row(row)
             return
         try:
@@ -532,7 +578,42 @@ class MainWindow(QMainWindow):
         entry.kmh = value
         entry.manual = True
         self._timeline_status_reason = None
+        self._timeline_context = self._current_timeline_context()
         self._update_timeline_row(row)
+
+    def _on_timeline_selection_changed(self) -> None:
+        if self._timeline_table_loading:
+            return
+        selection_model = self.timeline_table.selectionModel()
+        if selection_model is None:
+            return
+        selected_rows = selection_model.selectedRows()
+        if not selected_rows:
+            return
+        self._jump_to_timeline_row(selected_rows[0].row())
+
+    def _on_timeline_item_activated(self, item: QTableWidgetItem) -> None:
+        if self._timeline_table_loading or item is None:
+            return
+        self._jump_to_timeline_row(item.row())
+
+    def _jump_to_timeline_row(self, row: int) -> None:
+        if row < 0 or row >= len(self.speed_timeline):
+            return
+        entry = self.speed_timeline[row]
+        self._seek_preview_to_time(entry.time_sec)
+
+    def _seek_preview_to_time(self, seconds: float) -> None:
+        if not self.reader or not self.reader.is_opened():
+            return
+        if seconds < 0 or not np.isfinite(seconds):
+            return
+        fps = self._fps()
+        if fps <= 0:
+            return
+        target_frame = int(round(seconds * fps))
+        target_frame = max(0, min(target_frame, max(0, self._total_frames() - 1)))
+        self._seek_to_frame(target_frame)
 
     def _on_analyze_timeline(self) -> None:
         if not self.reader or not self.reader.is_opened():
