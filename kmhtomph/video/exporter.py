@@ -121,7 +121,10 @@ def export_video(
     """
     assert reader.is_opened(), "VideoReader doit être ouvert avant l’export"
 
-    props = get_props(reader.cap)  # type: ignore[arg-type]
+    if reader.cap is not None:
+        props = get_props(reader.cap)
+    else:
+        props = reader.get_props_dict()
     fps = float(params.fps) if params.fps and params.fps > 0 else float(props["fps"] or 25.0)
     width = int(props["width"])
     height = int(props["height"])
