@@ -15,7 +15,7 @@ import math
 import numpy as np
 import cv2
 
-from PyQt5.QtCore import Qt, QTimer, QSettings
+from PyQt5.QtCore import Qt, QTimer, QSettings, pyqtSignal
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QAction, QFileDialog, QMessageBox, QApplication,
     QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QComboBox, QCheckBox, QSpinBox,
@@ -82,6 +82,8 @@ class SpeedTimelineEntry:
 class SpeedTimelineTable(QTableWidget):
     """Table widget utilisé pour la timeline des vitesses."""
 
+    editing_started = pyqtSignal(int)
+
     def keyPressEvent(self, event):  # type: ignore[override]
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             modifiers = event.modifiers()
@@ -103,6 +105,12 @@ class SpeedTimelineTable(QTableWidget):
                         QTimer.singleShot(0, _focus_next)
                 return
         super().keyPressEvent(event)
+
+    def edit(self, index, trigger, event):  # type: ignore[override]
+        result = super().edit(index, trigger, event)
+        if result and index.isValid():
+            self.editing_started.emit(index.row())
+        return result
 
 
 class MainWindow(QMainWindow):
@@ -429,6 +437,7 @@ class MainWindow(QMainWindow):
         self.timeline_table.itemSelectionChanged.connect(self._on_timeline_selection_changed)
         self.timeline_table.itemActivated.connect(self._on_timeline_item_activated)
         self.timeline_table.itemChanged.connect(self._on_timeline_item_changed)
+        self.timeline_table.editing_started.connect(self._on_timeline_editing_started)
         group_layout.addWidget(self.timeline_table, 1)
 
         return group
@@ -614,6 +623,11 @@ class MainWindow(QMainWindow):
         self._timeline_context = self._current_timeline_context()
         self._update_timeline_row(row)
 
+    def _on_timeline_editing_started(self, row: int) -> None:
+        if self._timeline_table_loading:
+            return
+        self._jump_to_timeline_row(row, force=True)
+
     def _on_timeline_selection_changed(self) -> None:
         if self._timeline_table_loading:
             return
@@ -630,12 +644,12 @@ class MainWindow(QMainWindow):
             return
         self._jump_to_timeline_row(item.row())
 
-    def _jump_to_timeline_row(self, row: int) -> None:
+    def _jump_to_timeline_row(self, row: int, *, force: bool = False) -> None:
         if self._timeline_table_loading:
             return
         if row < 0 or row >= len(self.speed_timeline):
             return
-        if self._timeline_last_seek_row == row:
+        if not force and self._timeline_last_seek_row == row:
             return
         self._timeline_pending_seek_row = row
         if self._timeline_seek_timer.isActive():
