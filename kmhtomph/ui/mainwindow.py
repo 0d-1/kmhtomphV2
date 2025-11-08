@@ -79,6 +79,32 @@ class SpeedTimelineEntry:
         return float(self.kmh) * KMH_TO_MPH
 
 
+class SpeedTimelineTable(QTableWidget):
+    """Table widget utilisé pour la timeline des vitesses."""
+
+    def keyPressEvent(self, event):  # type: ignore[override]
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            modifiers = event.modifiers()
+            if modifiers in (Qt.NoModifier, Qt.KeypadModifier):
+                current_row = self.currentRow()
+                current_col = self.currentColumn()
+                super().keyPressEvent(event)
+                if current_col == 1 and current_row >= 0:
+                    next_row = current_row + 1
+                    if next_row < self.rowCount():
+                        def _focus_next():
+                            self.setCurrentCell(next_row, current_col)
+                            next_item = self.item(next_row, current_col)
+                            if next_item is None:
+                                next_item = QTableWidgetItem("")
+                                self.setItem(next_row, current_col, next_item)
+                            self.editItem(next_item)
+
+                        QTimer.singleShot(0, _focus_next)
+                return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -381,7 +407,7 @@ class MainWindow(QMainWindow):
         self.timeline_status_label.setStyleSheet("color: #888; font-size: 11px;")
         group_layout.addWidget(self.timeline_status_label)
 
-        self.timeline_table = QTableWidget(group)
+        self.timeline_table = SpeedTimelineTable(group)
         self.timeline_table.setColumnCount(3)
         self.timeline_table.setHorizontalHeaderLabels(["Temps (s)", "km/h", "mph"])
         header = self.timeline_table.horizontalHeader()
